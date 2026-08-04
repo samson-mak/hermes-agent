@@ -609,6 +609,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
+        # Supplying an explicit identity lets the CLI treat any unresolved or
+        # ambiguous @Name text in the content as presentation-only instead of
+        # failing the send (mention must match a channel member otherwise).
+        if self._self_pubkey:
+            args += ["--mention", self._self_pubkey]
         reply_target = reply_to or (metadata or {}).get("thread_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
@@ -1386,6 +1391,14 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
+    # Supplying an explicit identity lets the CLI treat unresolved or
+    # ambiguous @Name text as presentation-only instead of failing the send.
+    try:
+        self_pubkey = _load_nostr_auth().public_key_hex(private_key)
+    except Exception:  # noqa: BLE001 - never let pubkey derivation break delivery
+        self_pubkey = ""
+    if self_pubkey:
+        args += ["--mention", self_pubkey]
     if thread_id:
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
