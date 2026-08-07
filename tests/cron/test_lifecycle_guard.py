@@ -17,17 +17,29 @@ consistent with the existing binary/NUL-content handling (#76762).
 
 Contract locked in here
 -----------------------
-A NUL-byte script path must NEVER surface the raw Python ValueError.  It
-degrades to a clean rejection:
+For the ``os.open`` crash site fixed in 103bddfbd5, a NUL-byte script
+path must NEVER surface the raw Python ValueError.  It degrades to a
+clean rejection:
 
 * ``contains_gateway_lifecycle_command_or_referenced_script`` -> ``False``
 * ``check_gateway_lifecycle`` -> returns ``None`` (no raise)
 * ``_read_referenced_script`` -> ``(None, False)``
 
-These tests cover the terminal surface (bash / source / trailing-NUL /
-``-c`` payload forms), the cron surface (``script=`` values, including the
-``.py`` interpreter path), and valid absolute/relative paths as sanity
-checks that the guard still works normally.
+Known residual gap (out of scope for this test-only task; tracked on
+board t_5bcb7b0e): a NUL byte inside the USERNAME portion of a
+``~user`` path token (e.g. ``bash ~x\\x00y.sh``) still crashes the
+guard at ``_resolve_terminal_script_path()`` ->
+``Path(candidate).expanduser()`` (``pwd.getpwnam`` raises
+``ValueError: embedded null byte``) — that call site is not guarded.
+It is reachable via the terminal-tool binary-read fallback recursion
+(second trigger in EVIDENCE.md) and needs a production-side guard
+extension before those shapes can be tested green.
+
+These tests cover the terminal surface (shell-executable / source /
+trailing-NUL / ``-c`` payload forms), the cron surface (``script=``
+values, including the ``.py`` interpreter path), and valid
+absolute/relative paths as sanity checks that the guard still works
+normally.
 """
 
 import sys
