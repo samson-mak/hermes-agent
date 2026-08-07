@@ -27,13 +27,19 @@ clean rejection:
 
 Known residual gap (out of scope for this test-only task; tracked on
 board t_5bcb7b0e): a NUL byte inside the USERNAME portion of a
-``~user`` path token (e.g. ``bash ~x\\x00y.sh``) still crashes the
+``~user`` path token (e.g. ``bash ~x\x00y.sh``) still crashes the
 guard at ``_resolve_terminal_script_path()`` ->
 ``Path(candidate).expanduser()`` (``pwd.getpwnam`` raises
 ``ValueError: embedded null byte``) — that call site is not guarded.
 It is reachable via the terminal-tool binary-read fallback recursion
 (second trigger in EVIDENCE.md) and needs a production-side guard
 extension before those shapes can be tested green.
+
+Production fix (task t_82d7eb67): ``_resolve_terminal_script_path()``
+and ``_resolve_script_path()`` now guard ``expanduser()`` with
+``except (OSError, ValueError)`` (same #76762 pattern as the os.open
+site), so tilde+NUL tokens degrade to "nothing to scan" instead of
+crashing.  The tilde-NUL regression tests below lock that in.
 
 These tests cover the terminal surface (shell-executable / source /
 trailing-NUL / ``-c`` payload forms), the cron surface (``script=``
@@ -130,6 +136,45 @@ class TestNullByteScriptPaths:
             assert contains_gateway_lifecycle_command_or_referenced_script(command) is False
         for script in (NUL_SCRIPT_EMBEDDED, NUL_SCRIPT_TRAILING, NUL_SCRIPT_PY):
             assert check_gateway_lifecycle("clean prompt", script) is None
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(
+                f"bash ~x\x00y.sh",
+                id="bash-tilde-embedded-nul-username",
+            ),
+            pytest.param(
+                f"source ~x\x00y.sh",
+                id="source-tilde-embedded-nul-username",
+            ),
+            pytest.param(
+                f"bash ~/scri\x00pt.sh",
+                id="bash-tilde-home-embedded-nul",
+            ),
+        ],
+    )
+    def test_terminal_tilde_nul_script_returns_false(self, command):
+        """A NUL byte inside a `~user` (or `~/`) path token must not crash
+        the guard at _resolve_terminal_script_path -> Path.expanduser
+        (pwd.getpwnam raises ValueError: embedded null byte). Treated as
+        "nothing to scan": returns False, never raises (t_82d7eb67)."""
+        assert contains_gateway_lifecycle_command_or_referenced_script(command) is False
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            pytest.param("~bad\x00script.sh", id="cron-script-tilde-embedded-nul"),
+            pytest.param("~user\x00x.sh", id="cron-script-tilde-user-embedded-nul"),
+            pytest.param("~/bad\x00script.py", id="cron-python-script-tilde-nul"),
+        ],
+    )
+    def test_cron_tilde_nul_script_does_not_raise(self, script):
+        """A cron ``script=`` value with a NUL byte in the `~user`/`~/`
+        portion must not crash check_gateway_lifecycle at
+        _resolve_script_path -> Path.expanduser; degrades to prompt-only
+        scanning (no raise, no block) (t_82d7eb67)."""
+        assert check_gateway_lifecycle("clean prompt", script) is None
 
 
 class TestValidPathSanity:

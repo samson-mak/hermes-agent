@@ -171,7 +171,12 @@ def contains_launchctl_submit_command(command: str) -> bool:
 
 
 def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Path:
-    path = Path(candidate).expanduser()
+    try:
+        path = Path(candidate).expanduser()
+    except (OSError, ValueError):
+        # NUL byte in a ~user username invalidates the path; defer to the
+        # guarded os.open below (nothing to scan), consistent with #76762.
+        path = Path(candidate)
     if not path.is_absolute():
         path = Path(cwd or Path.cwd()) / path
     return path
@@ -377,7 +382,13 @@ def _resolve_script_path(script_path: str) -> Path:
     """
     from hermes_constants import get_hermes_home
 
-    raw = Path(script_path).expanduser()
+    try:
+        raw = Path(script_path).expanduser()
+    except (OSError, ValueError):
+        # NUL byte in a ~user username invalidates the path; fall back to the
+        # unexpanded path so the guarded _read_referenced_script finds nothing
+        # to scan, consistent with #76762.
+        raw = Path(script_path)
     if raw.is_absolute():
         return raw
     return get_hermes_home() / "scripts" / raw
