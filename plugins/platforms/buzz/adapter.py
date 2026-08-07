@@ -49,6 +49,30 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
+
+
+def _get_scoped_secret(name, default=None):
+    """Scope-aware credential read with the default-profile startup fallback.
+
+    Secondary profiles construct their adapters under a profile secret
+    scope -- the scope is authoritative and a scoped miss returns ``default``
+    (no cross-profile borrow from ``os.environ``, which may hold another
+    profile's value). The DEFAULT profile's adapter constructs and sends
+    *unscoped* under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash this path; there ``os.environ`` is that
+    profile's own value, so fall back to it. Same pattern as the Slack
+    ``SLACK_APP_TOKEN`` read (#59739) and
+    ``gateway/platforms/whatsapp_common.py::_get_wsecret``.
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
 logger = logging.getLogger(__name__)
 
 from gateway.platforms.base import (
@@ -226,7 +250,7 @@ def _resolve_private_key(extra: Optional[dict] = None) -> str:
 
     NEVER log the return value.
     """
-    key = os.getenv("BUZZ_PRIVATE_KEY", "").strip()
+    key = _get_scoped_secret("BUZZ_PRIVATE_KEY", "").strip()
     if key:
         return key
     configured = os.getenv("BUZZ_CREDENTIALS_FILE", "").strip() or (extra or {}).get("credentials_file", "")
@@ -585,6 +609,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
+        # Supplying an explicit identity lets the CLI treat any unresolved or
+        # ambiguous @Name text in the content as presentation-only instead of
+        # failing the send (mention must match a channel member otherwise).
+        if self._self_pubkey:
+            args += ["--mention", self._self_pubkey]
         reply_target = reply_to or (metadata or {}).get("thread_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
@@ -1362,6 +1391,14 @@ async def _standalone_send(
         return {"error": "Buzz standalone send: no target channel (set BUZZ_HOME_CHANNEL)"}
 
     args = ["messages", "send", "--channel", target, "--content", "-"]
+    # Supplying an explicit identity lets the CLI treat unresolved or
+    # ambiguous @Name text as presentation-only instead of failing the send.
+    try:
+        self_pubkey = _load_nostr_auth().public_key_hex(private_key)
+    except Exception:  # noqa: BLE001 - never let pubkey derivation break delivery
+        self_pubkey = ""
+    if self_pubkey:
+        args += ["--mention", self_pubkey]
     if thread_id:
         args += ["--reply-to", str(thread_id)]
     for path in media_files or []:
