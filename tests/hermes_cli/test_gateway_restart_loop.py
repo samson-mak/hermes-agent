@@ -695,6 +695,33 @@ class TestLifecycleGuardModule:
         )
         assert result is False
 
+    def test_null_byte_script_path_does_not_crash_guard(self):
+        """Regression: a terminal command referencing a script path with an
+        embedded NUL byte must not crash the guard with
+        ValueError: embedded null byte from os.open().
+
+        The try/except around os.open only caught OSError; os.open raises
+        ValueError for paths containing NUL bytes, which propagated and
+        crashed the whole guard. An invalid path is now treated as
+        "nothing to scan" (consistent with the binary/NUL-content handling,
+        #76762), so the guard returns False instead of raising.
+
+        The NUL-byte path must be the REFERENCED script for the bug to
+        fire: `source <path>` makes `_iter_referenced_shell_scripts` yield
+        the path itself (the `. ` shorthand does not — `Path(".").name`
+        is `""`, so the dot builtin is never recognized). A trailing
+        argument form like `python3 /tmp/scri\\x00pt.sh` only yields the
+        executable token (`python3`) and never reaches `os.open` with the
+        NUL path — that shape would pass even on unpatched code.
+        """
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+        result = contains_gateway_lifecycle_command_or_referenced_script(
+            "source /tmp/scri\x00pt.sh"
+        )
+        assert result is False
+
     def test_shell_script_reference_walk_still_works(self, tmp_path):
         """The referenced-script walk still applies to real shell scripts:
         a .sh script that itself invokes a lifecycle command is caught."""
