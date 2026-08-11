@@ -2462,6 +2462,12 @@ def _run_job_script(
                 "errors": "replace",
             }
         env = build_subprocess_env()
+        # Cron scripts run under their own interpreter (e.g. .venv-test CPython 3.14).
+        # Never inherit the gateway's PYTHONPATH, which points at the 3.11 venv
+        # site-packages; leaking it makes a 3.14 interpreter import 3.11 pure-Python
+        # packages (rpds) and fail with 'No module named rpds.rpds' (ABI mismatch).
+        # See TK-20260811-012.
+        env.pop("PYTHONPATH", None)
         env.update(env_overlay)
         # Use the job's workdir as the subprocess cwd when configured,
         # otherwise default to the scripts-dir parent (back-compat).
